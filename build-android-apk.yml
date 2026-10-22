@@ -1,0 +1,318 @@
+# BoardMate - builds an installable Android APK from index.html (the BoardMate mockup).
+# Put this file at .github/workflows/build-android-apk.yml and keep index.html in the repo root.
+name: Build BoardMate APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Create the Android project around index.html
+        run: |
+          set -e
+          test -f index.html || { echo "::error::index.html is missing from the repo root"; exit 1; }
+          mkdir -p android/app/src/main/java/com/boardmate/app android/app/src/main/assets android/app/src/main/res/values android/app/src/main/res/drawable android/app/src/main/res/mipmap-anydpi-v26
+          cat > android/settings.gradle <<'BM_EOF_0'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "BoardMate"
+          include ':app'
+          BM_EOF_0
+          cat > android/build.gradle <<'BM_EOF_1'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          BM_EOF_1
+          cat > android/gradle.properties <<'BM_EOF_2'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          BM_EOF_2
+          cat > android/app/build.gradle <<'BM_EOF_3'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.boardmate.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.boardmate.app"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+          }
+          BM_EOF_3
+          cat > android/app/src/main/AndroidManifest.xml <<'BM_EOF_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- Only needed so the Google Font (Nunito) loads when online. The app itself works offline. -->
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          BM_EOF_4
+          cat > android/app/src/main/java/com/boardmate/app/MainActivity.java <<'BM_EOF_5'
+          package com.boardmate.app;
+
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.Window;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import androidx.webkit.WebViewAssetLoader;
+
+          /**
+           * Shows the BoardMate mockup (assets/index.html) full-screen, unchanged.
+           * The page is served from https://appassets.androidplatform.net so it runs in a
+           * secure context (clipboard, localStorage and file upload all work).
+           */
+          public class MainActivity extends Activity {
+
+              private static final int FILE_REQUEST = 1001;
+              private WebView web;
+              private ValueCallback<Uri[]> fileCallback;
+
+              @SuppressLint({"SetJavaScriptEnabled", "SourceLockedOrientationActivity"})
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  Window w = getWindow();
+                  w.setStatusBarColor(Color.parseColor("#F5F7FF"));
+                  w.setNavigationBarColor(Color.WHITE);
+                  w.getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.parseColor("#F5F7FF"));
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+                  s.setTextZoom(100); // keep the design identical regardless of system font size
+                  s.setUserAgentString(s.getUserAgentString() + " BoardMateApp");
+
+                  final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                          .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                          .build();
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          return loader.shouldInterceptRequest(request.getUrl());
+                      }
+
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          Uri u = request.getUrl();
+                          if ("appassets.androidplatform.net".equals(u.getHost())) return false;
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, u)); // tel:, sms:, https: open outside
+                          } catch (Exception ignored) { }
+                          return true;
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                                                       FileChooserParams params) {
+                          if (fileCallback != null) fileCallback.onReceiveValue(null);
+                          fileCallback = callback;
+                          try {
+                              startActivityForResult(params.createIntent(), FILE_REQUEST);
+                          } catch (Exception e) {
+                              fileCallback = null;
+                              return false;
+                          }
+                          return true;
+                      }
+                  });
+
+                  web.loadUrl("https://appassets.androidplatform.net/assets/index.html");
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  if (requestCode == FILE_REQUEST) {
+                      if (fileCallback != null) {
+                          fileCallback.onReceiveValue(
+                                  WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                          fileCallback = null;
+                      }
+                      return;
+                  }
+                  super.onActivityResult(requestCode, resultCode, data);
+              }
+
+              /** Back closes an open sheet, then goes back one screen; on the home screen it leaves the app. */
+              @Override
+              public void onBackPressed() {
+                  web.evaluateJavascript("window.__back ? window.__back() : false", value -> {
+                      if (!"true".equals(value)) moveTaskToBack(true);
+                  });
+              }
+          }
+          BM_EOF_5
+          cat > android/app/src/main/res/values/strings.xml <<'BM_EOF_6'
+          <resources>
+              <string name="app_name">BoardMate</string>
+          </resources>
+          BM_EOF_6
+          cat > android/app/src/main/res/values/themes.xml <<'BM_EOF_7'
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@color/app_bg</item>
+              </style>
+          </resources>
+          BM_EOF_7
+          cat > android/app/src/main/res/values/colors.xml <<'BM_EOF_8'
+          <resources>
+              <color name="app_bg">#F5F7FF</color>
+              <color name="ic_bg">#4F6BED</color>
+          </resources>
+          BM_EOF_8
+          cat > android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'BM_EOF_9'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          BM_EOF_9
+          cat > android/app/src/main/res/drawable/ic_fg.xml <<'BM_EOF_10'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M54,30 L28,53 L35,53 L35,77 L48,77 L48,62 L60,62 L60,77 L73,77 L73,53 L80,53 Z" />
+          </vector>
+          BM_EOF_10
+          cat > appmode.inc <<'BM_EOF_11'
+          <script>
+          /* BoardMate APK: app-mode (only when opened inside the Android app) */
+          if(/BoardMateApp/.test(navigator.userAgent))document.documentElement.classList.add("app");
+          window.__back=function(){
+            var sh=document.getElementById("sheet");
+            if(sh&&sh.classList.contains("show")){closeSheet();return true;}
+            var b=document.querySelector("#content .appbar .iconbtn");
+            if(b&&/\u2190/.test(b.textContent)){b.click();return true;}
+            return false;
+          };
+          </script>
+          <style>
+          html.app,html.app body{height:100%;margin:0;overflow:hidden;background:#F5F7FF;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+          html.app body{display:flex;flex-direction:column;height:100dvh}
+          html.app header.top{padding:6px 10px;flex-wrap:nowrap;position:static;flex-shrink:0}
+          html.app header.top h1{display:none}
+          html.app .controls{flex-wrap:nowrap;overflow-x:auto;gap:8px;width:100%}
+          html.app .controls label{white-space:nowrap;font-size:12px}
+          html.app .seg button{padding:6px 10px;font-size:13px;white-space:nowrap}
+          html.app .index,html.app .notes{display:none}
+          html.app .layout{display:block;position:relative;flex:1;min-height:0;padding:0;margin:0;max-width:none}
+          html.app .phone{position:absolute;inset:0;width:auto;height:auto;padding:0;border-radius:0;background:transparent;box-shadow:none}
+          html.app .screen{border-radius:0}
+          html.app .statusbar{display:none}
+          html.app .notif{top:8px}
+          </style>
+          BM_EOF_11
+          python3 - <<'BM_PY'
+          h=open('index.html',encoding='utf-8',newline='').read()
+          inj=open('appmode.inc',encoding='utf-8').read()+'\n'
+          assert h.count('</head>')==1, 'index.html must contain exactly one </head>'
+          open('android/app/src/main/assets/index.html','w',encoding='utf-8',newline='').write(h.replace('</head>',inj+'</head>'))
+          BM_PY
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/BoardMate.apk
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BoardMate-APK
+          path: out/BoardMate.apk
+
+      # Also publish on the repo's Releases page so the APK can be downloaded straight on a phone
+      - name: Publish to Releases
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: BoardMate (latest build)
+          prerelease: true
+          files: out/BoardMate.apk
